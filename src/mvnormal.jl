@@ -19,13 +19,13 @@ function fit_mvnormals(θs, ∇logpθs; kwargs...)
 end
 
 # faster than computing `logpdf` and `rand` independently
-function rand_and_logpdf(rng, dist::Distributions.MvNormal, ndraws)
+function rand_and_logpdf!(rng, u, dist::Distributions.MvNormal, ndraws)
     μ = dist.μ
     Σ = dist.Σ
     N = length(μ)
 
     # draw points
-    u = Random.randn!(rng, similar(μ, N, ndraws))
+    Random.randn!(rng, u)
     unormsq = vec(sum(abs2, u; dims=1))
     x = PDMats.unwhiten!(u, Σ, u)
     x .+= μ

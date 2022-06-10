@@ -1,18 +1,21 @@
 function maximize_elbo(rng, logp, dists, ndraws, executor)
+    μ = dists[1].μ
+    N = length(μ)
+    u = Random.randn!(rng, similar(μ, N, ndraws))
     EE = Core.Compiler.return_type(
-        elbo_and_samples, Tuple{typeof(rng),typeof(logp),eltype(dists),Int}
+        elbo_and_samples!, Tuple{typeof(rng),typeof(u),typeof(logp),eltype(dists),Int}
     )
     estimates = similar(dists, EE)
     isempty(estimates) && return 0, estimates
     Folds.map!(estimates, dists, executor) do dist
-        return elbo_and_samples(rng, logp, dist, ndraws)
+        return elbo_and_samples!(rng, u, logp, dist, ndraws)
     end
     _, iteration_opt = _findmax(estimates |> Transducers.Map(est -> est.value))
     return iteration_opt, estimates
 end
 
-function elbo_and_samples(rng, logp, dist, ndraws)
-    ϕ, logqϕ = rand_and_logpdf(rng, dist, ndraws)
+function elbo_and_samples!(rng, u, logp, dist, ndraws)
+    ϕ, logqϕ = rand_and_logpdf!(rng, u, dist, ndraws)
     logpϕ = similar(logqϕ)
     logpϕ .= logp.(eachcol(ϕ))
     logr = logpϕ - logqϕ
