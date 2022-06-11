@@ -51,6 +51,11 @@ function __init__()
     Requires.@require AdvancedHMC = "0bf59076-c3b1-5ca4-86bd-e02cd72cde3d" begin
         include("integration/advancedhmc.jl")
     end
+    Requires.@require MeasureTheory = "eadaa1a4-d27c-401d-8699-e962e1bbc33b" begin
+        Requires.@require TransformVariables = "84d833dd-6860-57f9-a1a7-6da5db126cff" begin
+            include("integration/measuretheory.jl")
+        end
+    end
     Requires.@require Turing = "fce5fe82-541a-59a6-adf8-730c64b5f9a0" begin
         include("integration/turing.jl")
     end
