@@ -16,7 +16,6 @@ using Transducers
         nruns = 20
         ndraws = 1000_000
         ndraws_per_run = ndraws ÷ nruns
-        ndraws_elbo = 100
         Σ = rand_pd_mat(Float64, dim)
         μ = randn(dim)
         d = MvNormal(μ, Σ)
@@ -30,10 +29,19 @@ using Transducers
         seed = 76
         @testset for rng in rngs
             executor = rng isa MersenneTwister ? SequentialEx() : ThreadedEx()
+            dist_optimizer = Pathfinder.MaximumELBO(; rng, ndraws=100)
 
             Random.seed!(rng, seed)
             result = multipathfinder(
-                logp, ∇logp, ndraws; dim, nruns, ndraws_elbo, ndraws_per_run, rng, executor
+                logp,
+                ∇logp,
+                ndraws;
+                dim,
+                nruns,
+                dist_optimizer,
+                ndraws_per_run,
+                rng,
+                executor,
             )
             @test result isa MultiPathfinderResult
             @test result.input === (logp, ∇logp)
@@ -70,7 +78,7 @@ using Transducers
 
             Random.seed!(rng, seed)
             result2 = multipathfinder(
-                logp, ndraws; dim, nruns, ndraws_elbo, ndraws_per_run, rng, executor
+                logp, ndraws; dim, nruns, dist_optimizer, ndraws_per_run, rng, executor
             )
             @test result2.fit_distribution == result.fit_distribution
             @test result2.draws == result.draws
@@ -83,7 +91,7 @@ using Transducers
                 ndraws;
                 dim,
                 nruns,
-                ndraws_elbo,
+                dist_optimizer,
                 ndraws_per_run,
                 rng,
                 executor,

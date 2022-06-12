@@ -25,10 +25,11 @@ using Transducers
         seed = 42
         @testset for dim in [1, 5, 10, 100], rng in rngs
             executor = rng isa MersenneTwister ? SequentialEx() : ThreadedEx()
+            dist_optimizer = Pathfinder.MaximumELBO(; rng, executor)
 
             init = randn(dim)
             Random.seed!(rng, seed)
-            result = @inferred pathfinder(logp, ∇logp; init, ndraws, rng, executor)
+            result = @inferred pathfinder(logp, ∇logp; init, ndraws, rng, dist_optimizer)
             @test result isa PathfinderResult
             @test result.input === (logp, ∇logp)
             @test result.optim_prob isa SciMLBase.OptimizationProblem
@@ -52,18 +53,17 @@ using Transducers
             @test result.fit_distributions isa Vector{typeof(fit_distribution)}
             @test length(result.fit_distributions) == length(result.optim_trace)
             @test result.fit_distributions[result.fit_iteration + 1] == fit_distribution
-            @test result.fit_iteration ==
-                argmax(getproperty.(result.elbo_estimates, :value))
+            @test result.fit_iteration == argmax(getproperty.(result.fit_stats, :value))
 
             Random.seed!(rng, seed)
-            result2 = pathfinder(logp, ∇logp; init, ndraws, rng, executor)
+            result2 = pathfinder(logp, ∇logp; init, ndraws, rng, dist_optimizer)
             @test result2.fit_iteration == result.fit_iteration
             @test result2.draws == result.draws
-            @test getproperty.(result2.elbo_estimates, :value) ==
-                getproperty.(result.elbo_estimates, :value)
+            @test getproperty.(result2.fit_stats, :value) ==
+                getproperty.(result.fit_stats, :value)
 
             ndraws = 2
-            result3 = pathfinder(logp, ∇logp; init, ndraws, executor)
+            result3 = pathfinder(logp, ∇logp; init, ndraws, dist_optimizer)
             @test size(result3.draws) == (dim, ndraws)
         end
     end
@@ -82,7 +82,6 @@ using Transducers
         ∇logp(x) = -(P * x)
         dim = 5
         ad_backend = AD.ReverseDiffBackend()
-        ndraws_elbo = 100
         rngs = if VERSION ≥ v"1.7"
             [MersenneTwister(), Random.default_rng()]
         else
@@ -92,22 +91,25 @@ using Transducers
         optimizer = Optim.LBFGS(; m=6)
         @testset for rng in rngs
             executor = rng isa MersenneTwister ? SequentialEx() : ThreadedEx()
+            dist_optimizer = Pathfinder.MaximumELBO(;
+                rng, executor, ndraws=100, save_draws=true
+            )
 
             Random.seed!(rng, seed)
             result = @inferred pathfinder(
-                logp; rng, dim, optimizer, ndraws_elbo, ad_backend, executor
+                logp; rng, dim, optimizer, dist_optimizer, ad_backend
             )
             @test result.input === logp
             @test result.fit_distribution.Σ ≈ Σ rtol = 1e-1
             @test result.optimizer == optimizer
+            @test size(result.draws) == (5, 100)
+            @test result.draws == result.fit_stats[result.fit_iteration].draws
             Random.seed!(rng, seed)
-            result2 = pathfinder(
-                logp; rng, dim, optimizer, ndraws_elbo, ad_backend, executor
-            )
+            result2 = pathfinder(logp; rng, dim, optimizer, dist_optimizer, ad_backend)
             @test result2.fit_distribution == result.fit_distribution
             @test result2.draws == result.draws
-            @test getproperty.(result2.elbo_estimates, :value) ==
-                getproperty.(result.elbo_estimates, :value)
+            @test getproperty.(result2.fit_stats, :value) ==
+                getproperty.(result.fit_stats, :value)
         end
         @testset "kwargs forwarded to solve" begin
             Random.seed!(42)
@@ -139,7 +141,7 @@ using Transducers
             result2 = pathfinder(logp; init, callback, ntries=nfail)
             @test !isapprox(result2.fit_distribution.μ, zeros(dim); atol=1e-6)
             @test result2.fit_iteration == 0
-            @test isempty(result2.elbo_estimates)
+            @test isempty(result2.fit_stats)
             @test result2.num_tries == nfail
             @test result2.optim_prob.u0 == result2.optim_trace.points[1]
         end

@@ -11,8 +11,8 @@ Container for results of multi-path Pathfinder.
 - `optim_prob::SciMLBase.OptimizationProblem`: Otimization problem used for
     optimization
 - `logp`: Log-density function
-- `fit_distribution::Distributions.MixtureModel`: uniformly-weighted mixture of ELBO-
-    maximizing multivariate normal distributions from each run.
+- `fit_distribution::Distributions.MixtureModel`: uniformly-weighted mixture of
+    multivariate normal distributions returned by each run.
 - `draws::AbstractMatrix{<:Real}`: draws from `fit_distribution` with size `(dim, ndraws)`,
     potentially resampled using importance resampling to be closer to the target
     distribution.
@@ -116,9 +116,6 @@ for approximating expectations with respect to ``p``.
     to run the single-path runs in parallel. If `rng` is known to be thread-safe, the
     default is `Transducers.PreferParallel()` (parallel executation, defaulting to
     multi-threading). Otherwise, it is `Transducers.SequentialEx()` (no parallelization).
-- `executor_per_run::Transducers.Executor=Transducers.SequentialEx()`: Transducers.jl
-    executor used within each run to parallelize PRNG calls. Defaults to no parallelization.
-    See [`pathfinder`](@ref) for a description.
 - `kwargs...` : Remaining keywords are forwarded to [`pathfinder`](@ref).
 
 # Returns
@@ -149,13 +146,11 @@ function multipathfinder(
     init=nothing,
     input=optim_fun,
     nruns::Int=init === nothing ? -1 : length(init),
-    ndraws_elbo::Int=DEFAULT_NDRAWS_ELBO,
-    ndraws_per_run::Int=max(ndraws_elbo, cld(ndraws, max(nruns, 1))),
+    ndraws_per_run::Int=cld(ndraws, max(nruns, 1)),
     rng::Random.AbstractRNG=Random.GLOBAL_RNG,
     history_length::Int=DEFAULT_HISTORY_LENGTH,
     optimizer=default_optimizer(history_length),
     executor::Transducers.Executor=_default_executor(rng),
-    executor_per_run=Transducers.SequentialEx(),
     importance::Bool=true,
     kwargs...,
 )
@@ -184,8 +179,6 @@ function multipathfinder(
             optimizer,
             ndraws=ndraws_per_run,
             init=init_i,
-            executor=executor_per_run,
-            ndraws_elbo,
             kwargs...,
         )
     end

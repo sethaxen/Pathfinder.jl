@@ -105,7 +105,7 @@ end
 
         logp(x) = LogDensityProblems.logdensity(P, x)
         ∇logp(x) = LogDensityProblems.logdensity_and_gradient(∇P, x)[2]
-        result_pf = pathfinder(logp, ∇logp; dim=LogDensityProblems.dimension(P))
+        result_pf = pathfinder(logp, ∇logp; dim=LogDensityProblems.dimension(P), ndraws=1)
 
         @testset "Initial point" begin
             result_hmc2 = mcmc_with_warmup(

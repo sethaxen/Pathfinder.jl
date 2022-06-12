@@ -12,14 +12,16 @@ Container for results of single-path Pathfinder.
 - `optim_prob::SciMLBase.OptimizationProblem`: Otimization problem used for
     optimization
 - `logp`: Log-density function
-- `fit_distribution::Distributions.MvNormal`: ELBO-maximizing multivariate normal
-    distribution
+- `dist_optimizer`: Optimizer used to compute `fit_iteration` and `fit_distribution` from
+    `logp`, `optim_solution`, `optim_trace`, and `fit_distributions`.
+- `fit_distribution::Distributions.MvNormal`: multivariate normal distribution returned by
+    `dist_optimizer`
 - `draws::AbstractMatrix{<:Real}`: draws from multivariate normal with size `(dim, ndraws)`
 - `fit_distribution_transformed`: `fit_distribution` transformed to the same space as the
     user-supplied target distribution. This is only different from `fit_distribution` when
     integrating with other packages, and its type depends on the type of `input`.
 - `draws_transformed`: `draws` transformed to be draws from `fit_distribution_transformed`.
-- `fit_iteration::Int`: Iteration at which ELBO estimate was maximized
+- `fit_iteration::Int`: Iteration at which `fit_distribution` occurred
 - `num_tries::Int`: Number of tries until Pathfinder succeeded
 - `optim_solution::SciMLBase.OptimizationSolution`: Solution object of optimization.
 - `optim_trace::Pathfinder.OptimizationTrace`: container for optimization trace of points,
@@ -27,28 +29,28 @@ Container for results of single-path Pathfinder.
 - `fit_distributions::AbstractVector{Distributions.MvNormal}`: Multivariate normal
     distributions for each point in `optim_trace`, where
     `fit_distributions[fit_iteration + 1] == fit_distribution`
-- `elbo_estimates::AbstractVector{<:Pathfinder.ELBOEstimate}`: ELBO estimates for all but
-    the first distribution in `fit_distributions`.
+- `fit_stats`: Additional statistics computed by `dist_optimizer`.
 
 # Returns
 - [`PathfinderResult`](@ref)
 """
-struct PathfinderResult{I,O,R,OP,LP,FD,D,FDT,DT,OS,OT,EE}
+struct PathfinderResult{I,O,R,OP,LP,DO,FD,D,FDT,DT,FI,OS,OT,FS}
     input::I
     optimizer::O
     rng::R
     optim_prob::OP
     logp::LP
+    dist_optimizer::DO
     fit_distribution::FD
     draws::D
     fit_distribution_transformed::FDT
     draws_transformed::DT
-    fit_iteration::Int
+    fit_iteration::FI
     num_tries::Int
     optim_solution::OS
     optim_trace::OT
     fit_distributions::Vector{FD}
-    elbo_estimates::EE
+    fit_stats::FS
 end
 
 function Base.show(io::IO, ::MIME"text/plain", result::PathfinderResult)
@@ -56,9 +58,12 @@ function Base.show(io::IO, ::MIME"text/plain", result::PathfinderResult)
     println(io, "  tries: $(result.num_tries)")
     println(io, "  draws: $(size(result.draws, 2))")
     println(
-        io, "  fit iteration: $(result.fit_iteration) (total: $(length(result.optim_trace) - 1))"
+        io,
+        "  fit iteration: $(string(result.fit_iteration)) (total: $(length(result.optim_trace) - 1))",
     )
-    println(io, "  fit ELBO: $(_to_string(result.elbo_estimates[result.fit_iteration]))")
+    if result.fit_stats isa AbstractVector{<:ELBOEstimate}
+        println(io, "  fit ELBO: $(_to_string(result.fit_stats[result.fit_iteration]))")
+    end
     print(io, "  fit distribution: ", result.fit_distribution)
     return nothing
 end
@@ -72,9 +77,11 @@ end
 Find the best multivariate normal approximation encountered while maximizing `logp`.
 
 From an optimization trajectory, Pathfinder constructs a sequence of (multivariate normal)
-approximations to the distribution specified by `logp`. The approximation that maximizes the
-evidence lower bound (ELBO), or equivalently, minimizes the KL divergence between the
-approximation and the true distribution, is returned.
+approximations to the distribution specified by `logp`.
+
+By default, the approximation that maximizes the evidence lower bound (ELBO), or
+equivalently, minimizes the KL divergence between the approximation and the true
+distribution, is returned. This can be changed by providing a different `dist_optimizer`.
 
 The covariance of the multivariate normal distribution is an inverse Hessian approximation
 constructed using at most the previous `history_length` steps.
@@ -101,22 +108,27 @@ constructed using at most the previous `history_length` steps.
     entries uniformly in the range ``[-s, s]``
 - `init_sampler`: function with the signature `(rng, x) -> x` that modifies a vector of
     length `dims` in-place to generate an initial point
-- `ndraws_elbo::Int=$DEFAULT_NDRAWS_ELBO`: Number of draws used to estimate the ELBO
-- `ndraws::Int=ndraws_elbo`: number of approximate draws to return
+- `ndraws::Int`: number of approximate draws to return. Defaults to 0 unless draws from
+    `dist_optimizer` can be resued.
 - `ad_backend=AD.ForwardDiffBackend()`: AbstractDifferentiation.jl AD backend.
 - `rng::Random.AbstractRNG`: The random number generator to be used for drawing samples
-- `executor::Transducers.Executor=Transducers.SequentialEx()`: Transducers.jl executor that
-    determines if and how to perform ELBO computation in parallel. The default
-    (`SequentialEx()`) performs no parallelization. If `rng` is known to be thread-safe, and
-    the log-density function is known to have no internal state, then
-    `Transducers.PreferParallel()` may be used to parallelize log-density evaluation.
-    This is generally only faster for expensive log density functions.
 - `history_length::Int=$DEFAULT_HISTORY_LENGTH`: Size of the history used to approximate the
     inverse Hessian.
 - `optimizer`: Optimizer to be used for constructing trajectory. Can be any optimizer
     compatible with Optimization.jl, so long as it supports callbacks. Defaults to
     `Optim.LBFGS(; m=history_length, linesearch=LineSearches.MoreThuente())`. See
     the [Optimization.jl documentation](https://optimization.sciml.ai/stable) for details.
+- `dist_optimizer`: Callable that selects the returned distribution. Its signature must be
+    `(logp, optim_solution, optim_trace, fit_distributions) -> (success, fit_distribution, fit_iteration, fit_stats)`, where
+    `optim_solution` is a `SciMLBase.OptimizationSolution`,
+    `optim_trace` is a `Pathfinder.OptimizationTrace`,
+    `success` indicates whether the optimization succeeded,
+    `fit_iteration` is an integer such that
+    `fit_distributions[iteration + 1] === fit_distribution` or `nothing`, and
+    `fit_stats` is an arbitrary container of statistics computed during optimization. If
+    the optimizer draws from `fit_distribution`, these draws can be reused by storing them
+    in `fit_stats` and overloading [`Pathfinder.draws_from_fit_stats`](@ref).
+    Defaults to [`Pathfinder.MaximumELBO`](@ref).
 - `ntries::Int=1_000`: Number of times to try the optimization, restarting if it fails. Before
     every restart, a new initial point is drawn using `init_sampler`.
 - `kwargs...` : Remaining keywords are forwarded to
@@ -163,8 +175,8 @@ function pathfinder(
     rng::Random.AbstractRNG=Random.GLOBAL_RNG,
     history_length::Int=DEFAULT_HISTORY_LENGTH,
     optimizer=default_optimizer(history_length),
-    ndraws_elbo::Int=DEFAULT_NDRAWS_ELBO,
-    ndraws::Int=ndraws_elbo,
+    dist_optimizer=MaximumELBO(; rng),
+    ndraws::Int=dist_optimizer isa MaximumELBO{true} ? dist_optimizer.ndraws : 0,
     input=prob,
     kwargs...,
 )
@@ -180,7 +192,7 @@ function pathfinder(
             history_length,
             optimizer,
             progress_id,
-            ndraws_elbo,
+            dist_optimizer,
             kwargs...,
         )
     end
@@ -190,27 +202,29 @@ function pathfinder(
         optim_solution,
         optim_trace,
         fit_distributions,
+        fit_distribution,
         fit_iteration,
-        elbo_estimates,
+        fit_stats,
     ) = path_result
 
-    if !success
-        ndraws_elbo_actual = 0
+    success ||
         @warn "Pathfinder failed after $itry tries. Increase `ntries`, inspect the model for numerical instability, or provide a more suitable `init_sampler`."
+
+    draws = if success
+        stats_draws = draws_from_fit_stats(fit_stats, fit_iteration)
+        if stats_draws !== nothing
+            # reuse existing draws if available; draw additional ones if necessary
+            ndraws_stats = size(stats_draws, 2)
+            if ndraws_stats < ndraws
+                hcat(stats_draws, rand(rng, fit_distribution, ndraws - ndraws_stats))
+            else
+                stats_draws[:, 1:ndraws]
+            end
+        else
+            rand(rng, fit_distribution, ndraws)
+        end
     else
-        elbo_estimate_opt = elbo_estimates[fit_iteration]
-        ndraws_elbo_actual = ndraws_elbo
-    end
-
-    fit_distribution = fit_distributions[fit_iteration + 1]
-
-    # reuse existing draws; draw additional ones if necessary
-    draws = if ndraws_elbo_actual == 0
         rand(rng, fit_distribution, ndraws)
-    elseif ndraws_elbo_actual < ndraws
-        hcat(elbo_estimate_opt.draws, rand(rng, fit_distribution, ndraws - ndraws_elbo_actual))
-    else
-        elbo_estimate_opt.draws[:, 1:ndraws]
     end
 
     # placeholders
@@ -223,6 +237,7 @@ function pathfinder(
         rng,
         optim_solution.prob,
         logp,
+        dist_optimizer,
         fit_distribution,
         draws,
         fit_distribution_transformed,
@@ -232,7 +247,7 @@ function pathfinder(
         optim_solution,
         optim_trace,
         fit_distributions,
-        elbo_estimates,
+        fit_stats,
     )
 end
 
@@ -248,7 +263,7 @@ function _pathfinder_try_until_succeed(
 )
     itry = 1
     progress_name = "Optimizing (try 1)"
-    result = _pathfinder(rng, prob, logp; progress_name, kwargs...)
+    result = _pathfinder(prob, logp; progress_name, kwargs...)
     _prob = prob
     while !result.success && itry < ntries
         if itry == 1 && !allow_mutating_init
@@ -257,49 +272,40 @@ function _pathfinder_try_until_succeed(
         itry += 1
         init_sampler(rng, _prob.u0)
         progress_name = "Optimizing (try $itry)"
-        result = _pathfinder(rng, _prob, logp; progress_name, kwargs...)
+        result = _pathfinder(_prob, logp; progress_name, kwargs...)
     end
     return (; itry, result...)
 end
 
 function _pathfinder(
-    rng,
     prob,
     logp;
     history_length::Int=DEFAULT_HISTORY_LENGTH,
     optimizer=default_optimizer(history_length),
-    ndraws_elbo=DEFAULT_NDRAWS_ELBO,
-    executor::Transducers.Executor=Transducers.SequentialEx(),
+    dist_optimizer=MaximumELBO(; rng),
     kwargs...,
 )
     # compute trajectory
     optim_solution, optim_trace = optimize_with_trace(prob, optimizer; kwargs...)
-    L = length(optim_trace) - 1
-    success = L > 0
 
     # fit mv-normal distributions to trajectory
     fit_distributions = fit_mvnormals(
         optim_trace.points, optim_trace.gradients; history_length
     )
 
-    # find ELBO-maximizing distribution
-    fit_iteration, elbo_estimates = @views maximize_elbo(
-        rng, logp, fit_distributions[(begin + 1):end], ndraws_elbo, executor
+    success, fit_distribution, fit_iteration, fit_stats = dist_optimizer(
+        logp, optim_solution, optim_trace, fit_distributions
     )
-    if isempty(elbo_estimates)
-        success = false
-    else
-        elbo = elbo_estimates[fit_iteration].value
-        success &= !isnan(elbo) & (elbo != -Inf)
-    end
+    success &= length(optim_trace) > 1
 
     return (;
         success,
         optim_solution,
         optim_trace,
         fit_distributions,
+        fit_distribution,
         fit_iteration,
-        elbo_estimates,
+        fit_stats,
     )
 end
 
